@@ -407,9 +407,14 @@ The custom MCP server in `UiPath-DataFabric-API-Dashboard-Web/`  can be exposed 
 
 ## 7. License
 
-This repository is licensed under the [Apache License 2.0](./LICENSE) for all original solution code (Maestro process definitions, agent configurations, the MCP server, and documentation).
+This repository is licensed under the [Apache License 2.0](./LICENSE) for all original solution code, including Maestro process definitions, agent configurations, MCP dashboard server, and documentation.
 
-This license does **not** extend to UiPath proprietary tools, activities, SDK packages, or platform components referenced or used within the solution (Maestro, Agent Builder, Data Fabric, Orchestrator, Azure AI Speech, Autopilot for Everyone, Action Center, UiPath Apps, etc.), which remain subject to their own license terms.
+This license does **not** extend to UiPath proprietary tools, services, or platform components referenced or used within the solution. These include, but are not limited to:
+
+Maestro, Agent Builder, Data Fabric, Orchestrator, Studio Web, UiPath Studio, UiPath Assistant, UiPath Apps, Action Center, AI Trust Layer, Autopilot for Everyone, Context Grounding (Indexes), Storage Buckets, Connections, and External Applications.
+
+It also does not extend to external third-party services and dependencies used by the solution, including Google Drive APIs, Azure AI Speech services, Azure Blob Storage, ngrok, Node.js runtime, and Claude (Anthropic) or other external AI connectors.
+All such components remain subject to their respective licensing terms and conditions as defined by UiPath and their respective providers.
 
 ---
 
