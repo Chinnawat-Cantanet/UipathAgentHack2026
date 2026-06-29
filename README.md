@@ -21,34 +21,73 @@ Call centers generate thousands of recorded customer interactions every week, bu
 The pipeline is modeled and orchestrated as a single BPMN process in **UiPath Maestro**: `Speech Transcript Quality Evaluation Process`. The diagram below covers the **UiPath-native portion of the system, start to end** — everything from the trigger through to the Data Fabric write. What happens after that (the dashboard and Claude integration) is a separate, custom layer described in 2.2.
 
 ```
-[Start Event: Google Drive "File Created" — CallRecordings_Inbox]
-        │
-        ▼
-AzureSpeech_Transcription (RPA)  ──▶  SpeechTranscriptRefiner Agent
-        │
-        ▼
-   Human Review Required? ──No (Auto-Approved)──┐
-        │ Yes                                    │
-        ▼                                        │
- App Task: Human Review Transcripts               │
-        │                                        │
-        └──────────────────▶ Merge Review ◀──────┘
-                                  │
-                                  ▼
-                         Parallel Split Gateway
-                  ┌───────────────┼───────────────┐
-                  ▼               ▼               ▼
-          QA Scoring Agent   QoS Agent     Sentiment Agent
-                  │               │               │
-                  └───────────────┼───────────────┘
-                                  ▼
-                          Parallel Join Gateway
-                                  │
-                                  ▼
-                  Data Fabric Record Builder Agent
-                                  │
-                                  ▼
-                              [End Event]
+┌────────────────────────────────────────────────────────────────────┐
+│ START EVENT                                                        │
+│ Google Drive: "File Created" (CallRecordings_Inbox)                │
+└────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ RPA WORKFLOW                                                       │
+│ - Upload audio to Azure Blob Storage                               │
+│ - Trigger Azure AI Speech (batch transcription + diarization)      │
+└────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ AI AGENT                                                           │
+│ SpeechTranscriptRefiner Agent                                      │
+│ - Clean transcript                                                 │
+│ - Structure dialogue                                               │
+│ - Normalize speaker turns                                          │
+└────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ GATEWAY: HUMAN REVIEW REQUIRED?                                    │
+└────────────────────────────────────────────────────────────────────┘
+              │ YES                                      │ NO
+              ▼                                          ▼
+┌──────────────────────────────┐            ┌──────────────────────────────┐
+│ UiPath APP TASK              │            │ AUTO APPROVED                │
+│ Human Review Transcripts     │            │ Skip manual validation       │
+└──────────────────────────────┘            └──────────────────────────────┘
+              │                                          │
+              └──────────────────────┬───────────────────┘
+                                     ▼
+                         ┌────────────────────────┐
+                         │ MERGE REVIEW OUTPUT    │
+                         └────────────────────────┘
+                                     │
+                                     ▼
+                     ┌──────────────────────────────────┐
+                     │ PARALLEL ANALYTICS GATEWAY       │
+                     └──────────────────────────────────┘
+                        │            │             │
+                        ▼            ▼             ▼
+        ┌────────────────────┐ ┌────────────────┐ ┌────────────────────┐
+        │ QA Scoring Agent   │ │ QoS Agent      │ │ Sentiment Agent    │
+        │ - Quality scoring  │ │ - Service QoS  │ │ - Emotion analysis │
+        └────────────────────┘ └────────────────┘ └────────────────────┘
+                        │            │             │
+                        └────────────┬─────────────┘
+                                     ▼
+                     ┌──────────────────────────────────┐
+                     │ PARALLEL JOIN / CONSOLIDATION    │
+                     └──────────────────────────────────┘
+                                     │
+                                     ▼
+                     ┌──────────────────────────────────┐
+                     │ Data Fabric Record Builder Agent │
+                     │ - Persist QA + QoS + Sentiment   │
+                     │ - Build TranscriptQAResult       │
+                     │ - Update TranscriptQADashboard   │
+                     └──────────────────────────────────┘
+                                     │
+                                     ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ END EVENT                                                          │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 **Flow explanation:**
@@ -82,8 +121,43 @@ A quick overview of what each node does. Exact variable names and bindings are a
 | 6 | QoS Agent | Service task (agent) | Takes the refined transcript text as input and classifies the interaction's service quality / issue type. | Storage Bucket `DOCUMENT_QoS_Classification` → Index `DOCUMENT_QoS_Classification` |
 | 7 | Sentiment Agent | Service task (agent) | Takes the refined transcript text as input and analyzes customer sentiment throughout the call. | Storage Bucket `DOCUMENT_Sentiment_Score_Analysis` → Index `DOCUMENT_Sentiment_Score_Analysis` |
 | 7 | Data Fabric Record Builder Agent | Service task (agent) | Consolidates the QA, QoS, and Sentiment results into a single record and adds it to UiPath Data Fabric **via Data Fabric Activities** (not a bound Solution resource — this is why it won't appear in the Resources/Entities panel of the imported Solution). | Entities `TranscriptQAResult` and `TranscriptQADashboard` (tenant: `DefaultTenant`) |
+---
 
-### 2.2 Insight Layer (Outside UiPath)
+### 2.2 Insight Layer via UiPath Autopilot for Everyone
+
+In addition to the web dashboard, users can interact with the QA data using **UiPath Autopilot for Everyone** through the **`Retrieve Transcript QA Dashboard`** RPA workflow.
+
+The workflow retrieves the latest QA records from **UiPath Data Fabric** and provides them to Autopilot as structured context. Users can then ask natural language questions, and Autopilot analyzes the data, identifies trends and relationships, and generates visualizations without requiring users to manually navigate the dashboard.
+
+```
+UiPath Data Fabric
+(TranscriptQADashboard)
+            │
+            ▼
+Retrieve Transcript QA Dashboard (RPA)
+            │
+            ▼
+UiPath Autopilot for Everyone
+            │
+      ┌─────┴─────┐
+      ▼           ▼
+Natural Language  Visualizations
+Analysis          & Charts
+```
+
+**Example capabilities:**
+
+* Ask questions using natural language instead of navigating the dashboard.
+* Compare QA performance across agents.
+* Identify relationships between **QA Score**, **QoS Classification**, and **Customer Sentiment**.
+* Detect trends, recurring issues, and performance outliers.
+* Automatically generate charts and visual summaries from the retrieved data.
+* Explore insights beyond predefined dashboard widgets.
+
+This complements the browser dashboard by providing an AI-driven experience for ad hoc analysis, allowing users to discover insights and relationships that are not available through fixed dashboard views.
+---
+
+### 2.3 Insight Layer (Outside UiPath)
 
 Everything above runs natively inside UiPath. Once the Data Fabric Record Builder Agent writes a record, a separate custom layer takes over to turn that data into something people (and Claude) can actually use:
 
@@ -110,19 +184,21 @@ This layer is original solution code, not a UiPath product feature — see the l
 
 ---
 
-## 3. UiPath Components Used
 
-| Component | Role in this solution |
-|---|---|
-| **Maestro (BPMN Orchestration)** | Orchestrates the full `Speech Transcript Quality Evaluation Process` — conditional human-review branch, parallel agent fan-out/fan-in, and final consolidation. |
-| **Agent Builder (Low-Code Agents)** | `SpeechTranscriptRefiner Agent`, `QA Scoring Agent`, `QoS Classification Agent`, `Sentiment Analysis Agent`, `Data Fabric Record Builder Agent`. |
-| **RPA Workflow** | `AzureSpeech_Transcription` — uploads the recording to Azure Blob Storage, then calls Azure AI Speech for batch transcription with speaker diarization. |
-| **UiPath Apps** | `Human Review Transcripts` — the human-in-the-loop UI surfaced as a Maestro user task. |
-| **UiPath Data Fabric (Data Service)** | `CallCenterAgentList` entity — agent roster, bound as a Solution resource and indexed into `CallCenter Agent Master` for grounding; `TranscriptQAResult` and `TranscriptQADashboard` entities (tenant: `DefaultTenant`) — written via Data Fabric Activities by the Data Fabric Record Builder Agent. The reporting dashboard reads the same entities externally via the Data Fabric API, authenticated through an **External Application** registered in UiPath Admin (Identity → External Applications), not a Studio Web Connection. |
-| **Context Grounding (Indexes)** | `CallCenter Agent Master`, `Call Center Agent Scoring Evaluation Criteria`, `DOCUMENT_QoS_Classification`, `DOCUMENT_Sentiment_Score_Analysis` — RAG grounding sources used by the SpeechTranscriptRefiner, QA, QoS, and Sentiment agents. |
-| **Orchestrator Storage Buckets** | `Call Center Agent Scoring Evaluation Criteria`, `DOCUMENT_QoS_Classification`, `DOCUMENT_Sentiment_Score_Analysis` — source documents backing the indexes above. |
-| **Connections** | Google Drive connection — process trigger, "File Created" event on the `CallRecordings_Inbox` folder; Automat Consult External Application (Data Fabric API access — see Data Fabric row below). |
-| **Orchestrator Assets** | `AzureBlobBaseUrl` (Text), `AzureBlobSasToken` (Secret), `Ocp-Apim-Subscription-Key` (Secret), `SpeechEndpoint` (Text) — credentials/config used by the `AzureSpeech_Transcription` RPA workflow to upload recordings to Azure Blob Storage and call Azure AI Speech. |
+
+## 3. UiPath Components Used
+| Component                                     | Role in this solution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Maestro (BPMN Orchestration)**              | Orchestrates the full `Speech Transcript Quality Evaluation Process` — conditional human-review branch, parallel agent fan-out/fan-in, and final consolidation.                                                                                                                                                                                                                                                                                                                                                                         |
+| **Agent Builder (Low-Code Agents)**           | `SpeechTranscriptRefiner Agent`, `QA Scoring Agent`, `QoS Classification Agent`, `Sentiment Analysis Agent`, `Data Fabric Record Builder Agent`.                                                                                                                                                                                                                                                                                                                                                                                        |
+| **RPA Workflows**                             | `AzureSpeech_Transcription` — uploads the recording to Azure Blob Storage, then calls Azure AI Speech for batch transcription with speaker diarization. <br><br>`Retrieve Transcript QA Dashboard` — retrieves `TranscriptQADashboard` records from UiPath Data Fabric and provides them to UiPath Autopilot for Everyone for natural language analysis, insight generation, and automatic visualizations.                                                                                                                              |
+| **UiPath Apps**                               | `Human Review Transcripts` — the human-in-the-loop UI surfaced as a Maestro user task.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **UiPath Data Fabric (Data Service)**         | `CallCenterAgentList` entity — agent roster, bound as a Solution resource and indexed into `CallCenter Agent Master` for grounding; `TranscriptQAResult` and `TranscriptQADashboard` entities (tenant: `DefaultTenant`) — written via Data Fabric Activities by the Data Fabric Record Builder Agent. The reporting dashboard reads the same entities externally via the Data Fabric API, authenticated through an **External Application** registered in UiPath Admin (Identity → External Applications), not a Studio Web Connection. |
+| **Context Grounding (Indexes)**               | `CallCenter Agent Master`, `Call Center Agent Scoring Evaluation Criteria`, `DOCUMENT_QoS_Classification`, `DOCUMENT_Sentiment_Score_Analysis` — RAG grounding sources used by the SpeechTranscriptRefiner, QA, QoS, and Sentiment agents.                                                                                                                                                                                                                                                                                              |
+| **Orchestrator Storage Buckets**              | `Call Center Agent Scoring Evaluation Criteria`, `DOCUMENT_QoS_Classification`, `DOCUMENT_Sentiment_Score_Analysis` — source documents backing the indexes above.                                                                                                                                                                                                                                                                                                                                                                       |
+| **Connections**                               | Google Drive connection — process trigger, "File Created" event on the `CallRecordings_Inbox` folder; Automat Consult External Application (Data Fabric API access — see Data Fabric row below).                                                                                                                                                                                                                                                                                                                                        |
+| **Orchestrator Assets**                       | `AzureBlobBaseUrl` (Text), `AzureBlobSasToken` (Secret), `Ocp-Apim-Subscription-Key` (Secret), `SpeechEndpoint` (Text) — credentials/config used by the `AzureSpeech_Transcription` RPA workflow to upload recordings to Azure Blob Storage and call Azure AI Speech.                                                                                                                                                                                                                                                                   |
+| **UiPath Autopilot for Everyone (Assistant)** | Provides conversational, natural-language access layer over the `TranscriptQADashboard` and related Data Fabric entities. Enables users to ask ad-hoc questions (e.g., QA score trends, sentiment vs QoS correlations, agent comparisons), generate insights, and produce automatic summaries and visualizations without needing predefined dashboard views or workflows.                                                                                                                                                               |
 
 
 
@@ -226,9 +302,78 @@ npm start
 1. In Maestro, deploy `Speech Transcript Quality Evaluation Process`.
 2. Use the sample recording at `sample-data/sample_call_recording.wav` (placeholder — replace with your own test recording once uploaded), or upload any `.wav` recording into the `CallRecordings_Inbox` folder in your connected Google Drive — the trigger will pick it up automatically.
 3. Watch the process move through transcription → (optional human review) → parallel scoring → Data Fabric write.
-4. Open the dashboard (if running the MCP server) to see the QA record appear.
+4. Open the dashboard 
 
-### 6.6 Connect the Dashboard to Claude (MCP via ngrok)
+### 6.6 Analytics Interfaces (Optional choice)
+
+After deploying the solution, users can choose how they want to interact with the analytics and insights layer. The solution supports multiple access modes depending on the level of detail and technical depth required.
+
+| Option | Description | Setup Required |
+|--------|-------------|----------------|
+| **UiPath Autopilot for Everyone (Assistant)** | Natural language interface over `TranscriptQADashboard` and `TranscriptQAResult`. Enables users to ask business questions such as QA trends, agent comparisons, sentiment analysis, and QoS correlations. | ❌ No additional setup |
+| **MCP Dashboard Server (Node.js)** | Developer-focused dashboard and API layer that enables external AI tools (e.g., Claude) to query and analyze QA data via MCP. | ⚠️ Requires local Node.js + ngrok setup |
+---
+
+#### 6.6.1 UiPath Autopilot for Everyone
+
+UiPath Autopilot for Everyone is automatically available once the following conditions are met:
+
+- Data Fabric entities are created:
+  - `TranscriptQAResult`
+  - `TranscriptQADashboard`
+- The `Speech Transcript Quality Evaluation Process` has executed at least once and generated data
+
+---
+
+#### How to Access
+
+Users can open Autopilot from:
+
+- UiPath Assistant → **Autopilot for Everyone**
+- Or directly within the UiPath Automation Cloud experience (if enabled for tenant)
+
+---
+
+#### Configuration Requirement (Admin Setup)
+
+Before use, Autopilot for Everyone must be enabled in:
+
+1. Go to **UiPath Automation Cloud**
+2. Navigate to **Admin**
+3. Select **Tenant**
+4. Open **AI Trust Layer**
+5. Select **Autopilot for Everyone**
+6. Go to the **Tools** tab
+7. Click **Configure Tools**
+8. Select:
+   - `Speech Transcript Quality Evaluation Process`
+9.  Save and publish configuration
+
+---
+
+#### What You Can Ask
+
+Users can interact with the system using natural language queries such as:
+
+- "Show me QA score trends for this week"
+- "Compare agent performance by sentiment score"
+- "What is the relationship between QoS and QA score?"
+- "Which agents have the lowest sentiment ratings?"
+- "Summarize today's transcript quality results"
+
+---
+
+#### System Behavior
+
+Once configured, Autopilot for Everyone will automatically:
+
+- Query Data Fabric entities (`TranscriptQAResult`, `TranscriptQADashboard`)
+- Perform contextual analysis across QA, QoS, and Sentiment dimensions
+- Generate insights and summaries in natural language
+- Provide optional visual trends and comparisons
+- Enable ad-hoc exploration without predefined dashboards
+
+#### 6.6.2 Connect the Dashboard to Claude (MCP via ngrok)
 
 The custom MCP server in `UiPath-DataFabric-API-Dashboard-Web/` (started in 6.4) can be exposed to Claude as a connector, so Claude can query and discuss your QA data directly instead of just the browser dashboard.
 
@@ -259,8 +404,6 @@ The custom MCP server in `UiPath-DataFabric-API-Dashboard-Web/` (started in 6.4)
 Full server-side exposure details (auth, environment variables) are documented in `UiPath-DataFabric-API-Dashboard-Web/README.md`.
 
 ---
-
-## 7. License
 
 ## 7. License
 
