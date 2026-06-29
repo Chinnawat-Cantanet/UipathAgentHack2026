@@ -262,7 +262,9 @@ Full server-side exposure details (auth, environment variables) are documented i
 
 ## 7. License
 
-This repository is licensed under the [MIT License](./LICENSE) for all original solution code (Maestro process definitions, agent configurations, the MCP server, and documentation).
+## 7. License
+
+This repository is licensed under the [Apache License 2.0](./LICENSE) for all original solution code (Maestro process definitions, agent configurations, the MCP server, and documentation).
 
 This license does **not** extend to UiPath proprietary tools, activities, SDK packages, or platform components referenced or used within the solution (Maestro, Agent Builder, Data Fabric, Orchestrator, IXP, Azure AI Speech, etc.), which remain subject to their own license terms.
 
