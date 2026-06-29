@@ -30,15 +30,15 @@ The pipeline is modeled and orchestrated as a single BPMN process in **UiPath Ma
 ┌────────────────────────────────────────────────────────────────────┐
 │ RPA WORKFLOW                                                       │
 │ - Upload audio to Azure Blob Storage                               │
-│ - Trigger Azure AI Speech (batch transcription + diarization)      │
+│ - Azure AI Speech (batch transcription + diarization)      │
 └────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ AI AGENT                                                           │
 │ SpeechTranscriptRefiner Agent                                      │
-│ - Clean transcript                                                 │
-│ - Structure dialogue                                               │
+│ - Clean & Structure transcript                                     │
+│ - Identify Call Center Agent                                       │
 │ - Normalize speaker turns                                          │
 └────────────────────────────────────────────────────────────────────┘
                                 │
@@ -80,8 +80,8 @@ The pipeline is modeled and orchestrated as a single BPMN process in **UiPath Ma
                      ┌──────────────────────────────────┐
                      │ Data Fabric Record Builder Agent │
                      │ - Persist QA + QoS + Sentiment   │
-                     │ - Build TranscriptQAResult       │
-                     │ - Update TranscriptQADashboard   │
+                     │ - Upload TranscriptQAResult      │
+                     │ - Upload TranscriptQADashboard   │
                      └──────────────────────────────────┘
                                      │
                                      ▼
@@ -111,9 +111,9 @@ The pipeline is modeled and orchestrated as a single BPMN process in **UiPath Ma
 
 A quick overview of what each node does. Exact variable names and bindings are already documented inside the `.uis` package itself, so this table sticks to purpose-level detail plus the **Storage Bucket → Context Grounding Index → Data Fabric Entity** each step is grounded on or writes to.
 
-| # | Node | Type | What it does | Storage Bucket → Index / Entity |
+| # | Node | Type | What it does | NOTE |
 |---|---|---|---|---|
-| 1 | Start Event | Message start event | Triggered by a Google Drive "File Created" event, watching the `CallRecordings_Inbox` folder via a connected Google account. | N/A — trigger only |
+| 1 | Start Event | File Create start event | Triggered by a Google Drive "File Created" event, watching the `CallRecordings_Inbox` folder via a connected Google account. | N/A — trigger only |
 | 2 | AzureSpeech_Transcription | Service task (RPA workflow) | Uploads the recording to Azure Blob Storage, then sends it to Azure AI Speech for batch transcription and returns the raw transcript text. | N/A (uses Orchestrator Assets — see Section 6.3) |
 | 3 | SpeechTranscriptRefiner Agent | Service task (agent) | Takes the raw transcript text as input, cleans it up, and identifies which call center agent the recording belongs to. | Index `CallCenter Agent Master`, built from the `CallCenterAgentList` entity |
 | 4 | App task for human review | User task | If confidence is low, routes the refined transcript text to the **Human Review Transcripts** app for a human reviewer to correct/approve. | N/A |
@@ -154,7 +154,9 @@ Analysis          & Charts
 * Automatically generate charts and visual summaries from the retrieved data.
 * Explore insights beyond predefined dashboard widgets.
 
+```
 This complements the browser dashboard by providing an AI-driven experience for ad hoc analysis, allowing users to discover insights and relationships that are not available through fixed dashboard views.
+```
 ---
 
 ### 2.3 Insight Layer (Outside UiPath)
@@ -254,7 +256,7 @@ UipathAgentHack2026/
 
 ### 6.1 Prerequisites
 
-- A UiPath Automation Cloud tenant with: Orchestrator, Data Service, Maestro, Studio Web, and Agent Builder enabled.
+- A UiPath Automation Cloud tenant with: Orchestrator, Data Service, Maestro, Studio Web, Agent Builder, and Autopilot for Everyone enabled.
 - An Azure subscription with Azure AI Speech (batch transcription) enabled.
 - Node.js 18+ (for the optional MCP dashboard server).
 - A Google account with a `CallRecordings_Inbox` folder created in Google Drive (this is the folder the trigger watches).
@@ -279,8 +281,8 @@ Storage Buckets, Indexes, Connections, and Data Fabric Entities are tenant-scope
 | Entity | Data Fabric | `TranscriptQAResult` (tenant: `DefaultTenant`) | Data Fabric → Entities → Add → create with matching fields (written to via Data Fabric Activities by the Data Fabric Record Builder Agent — not a Solution-bound resource) |
 | Entity | Data Fabric | `TranscriptQADashboard` (tenant: `DefaultTenant`) | Data Fabric → Entities → Add → create with matching fields (read by the reporting dashboard / MCP server) |
 | Storage Bucket | Bucket | `Call Center Agent Scoring Evaluation Criteria` | Orchestrator → Storage Buckets → Add → name exactly as shown, upload reference docs |
-| Storage Bucket | Bucket | `DOCUMENT_QoS_Classification` | Same as above |
-| Storage Bucket | Bucket | `DOCUMENT_Sentiment_Score_Analysis` | Same as above |
+| Storage Bucket | Bucket | `DOCUMENT_QoS_Classification` |  Orchestrator → Storage Buckets → Add → name exactly as shown, upload reference docs |
+| Storage Bucket | Bucket | `DOCUMENT_Sentiment_Score_Analysis` | Orchestrator → Storage Buckets → Add → name exactly as shown, upload reference docs |
 | Index | Context Grounding | `CallCenter Agent Master` | Studio Web → Indexes → Create → point at corresponding bucket above |
 | Index | Context Grounding | `Call Center Agent Scoring Evaluation Criteria` | Same, source = matching bucket |
 | Index | Context Grounding | `DOCUMENT_QoS_Classification` | Same, source = matching bucket |
@@ -288,23 +290,15 @@ Storage Buckets, Indexes, Connections, and Data Fabric Entities are tenant-scope
 | External Application | UiPath Admin | Automat Consult (Data Fabric API access) | UiPath Admin → Identity → External Applications → Add → register an app, grant Data Fabric API scope, then use the generated Client ID/Secret in `UiPath-DataFabric-API-Dashboard-Web/.env` |
 
 
-### 6.4 Configure the optional MCP dashboard server
 
-```bash
-cd UiPath-DataFabric-API-Dashboard-Web
-cp .env.example .env     # fill in your Data Fabric tenant URL + credentials
-npm install
-npm start
-```
-
-### 6.5 Run the demo
+### 6.4 Run the demo
 
 1. In Maestro, deploy `Speech Transcript Quality Evaluation Process`.
 2. Use the sample recording at `sample-data/sample_call_recording.wav` (placeholder — replace with your own test recording once uploaded), or upload any `.wav` recording into the `CallRecordings_Inbox` folder in your connected Google Drive — the trigger will pick it up automatically.
 3. Watch the process move through transcription → (optional human review) → parallel scoring → Data Fabric write.
 4. Open the dashboard 
 
-### 6.6 Analytics Interfaces (Optional choice)
+### 6.5 Analytics Interfaces (Optional choice)
 
 After deploying the solution, users can choose how they want to interact with the analytics and insights layer. The solution supports multiple access modes depending on the level of detail and technical depth required.
 
@@ -314,7 +308,7 @@ After deploying the solution, users can choose how they want to interact with th
 | **MCP Dashboard Server (Node.js)** | Developer-focused dashboard and API layer that enables external AI tools (e.g., Claude) to query and analyze QA data via MCP. | ⚠️ Requires local Node.js + ngrok setup |
 ---
 
-#### 6.6.1 UiPath Autopilot for Everyone
+#### 6.5.1 UiPath Autopilot for Everyone
 
 UiPath Autopilot for Everyone is automatically available once the following conditions are met:
 
@@ -373,12 +367,19 @@ Once configured, Autopilot for Everyone will automatically:
 - Provide optional visual trends and comparisons
 - Enable ad-hoc exploration without predefined dashboards
 
-#### 6.6.2 Connect the Dashboard to Claude (MCP via ngrok)
+#### 6.5.2 Connect the Dashboard to Claude (MCP via ngrok)
 
-The custom MCP server in `UiPath-DataFabric-API-Dashboard-Web/` (started in 6.4) can be exposed to Claude as a connector, so Claude can query and discuss your QA data directly instead of just the browser dashboard.
+The custom MCP server in `UiPath-DataFabric-API-Dashboard-Web/`  can be exposed to Claude as a connector, so Claude can query and discuss your QA data directly instead of just the browser dashboard.
 
-1. Make sure the local server is running first (from 6.4):
+   Full configuration details are available in:
    ```bash
+   UiPath-DataFabric-API-Dashboard-Web/README.md
+   ```
+1. Make sure the local server is running first :
+   ```bash
+   cd UiPath-DataFabric-API-Dashboard-Web
+   cp .env.example .env     # fill in your Data Fabric tenant URL + credentials
+   npm install
    npm start
    ```
    By default it listens on port `3000`.
@@ -401,7 +402,6 @@ The custom MCP server in `UiPath-DataFabric-API-Dashboard-Web/` (started in 6.4)
 
 > ⚠️ Free ngrok URLs are temporary — restarting the tunnel generates a new URL (unless you reserve a static domain on a paid ngrok plan), so you'll need to update the connector URL in Claude each time. If Claude shows "Couldn't connect to the server," double-check that both `npm start` and `ngrok http 3000` are still running in the background, and that the URL in Claude's connector settings matches the current ngrok URL exactly.
 
-Full server-side exposure details (auth, environment variables) are documented in `UiPath-DataFabric-API-Dashboard-Web/README.md`.
 
 ---
 
